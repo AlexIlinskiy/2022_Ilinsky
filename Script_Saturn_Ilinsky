@@ -1,0 +1,173 @@
+import requests
+import pandas as pd
+from bs4 import BeautifulSoup
+import json
+import re
+
+MAP_SECTION = "https://msk.saturn.net/shops/shops?city=all"
+
+EXTRACT_URL = "poo/byids"
+
+CITIES = {
+   'Moscow': 'https://msk.saturn.net/shops/shops?city=city_2',
+   'Saint Petersburg': 'https://msk.saturn.net/shops/shops?city=city_1',
+   'Barnaul': 'https://msk.saturn.net/shops/shops?city=city_3',
+   'Volgograd': 'https://msk.saturn.net/shops/shops?city=city_4',
+   'Volzhskiy': 'https://msk.saturn.net/shops/shops?city=city_23', 
+   'Ekaterinburg': 'https://msk.saturn.net/shops/shops?city=city_5',
+   'Kazan': 'https://msk.saturn.net/shops/shops?city=city_6',
+   'Krasnodar': 'https://msk.saturn.net/shops/shops?city=city_7',
+   'Krasnoyarsk': 'https://msk.saturn.net/shops/shops?city=city_8',
+   'Magnitogorsk': 'https://msk.saturn.net/shops/shops?city=city_9',
+   'Neftekamsk': 'https://msk.saturn.net/shops/shops?city=city_21',
+   'Nizhniy Novgorod': 'https://msk.saturn.net/shops/shops?city=city_10',
+   'Novosibirsk': 'https://msk.saturn.net/shops/shops?city=city_12',
+   'Orenburg': 'https://msk.saturn.net/shops/shops?city=city_11',
+   'Orekhovo-Zuevo': 'https://msk.saturn.net/shops/shops?city=city_22',
+   'Podolsk': 'https://msk.saturn.net/shops/shops?city=city_18',
+   'Samara': 'https://msk.saturn.net/shops/shops?city=city_14',
+   'Sochi': 'https://msk.saturn.net/shops/shops?city=city_15',
+   'Sterlitamak': 'https://msk.saturn.net/shops/shops?city=city_20',
+   'Tolyatti': 'https://msk.saturn.net/shops/shops?city=city_24',
+   'Tomsk': 'https://msk.saturn.net/shops/shops?city=city_25',
+   'Ufa': 'https://msk.saturn.net/shops/shops?city=city_16',
+   'Chelyabinsk': 'https://msk.saturn.net/shops/shops?city=city_17',
+}
+
+def extract_points (URL):
+
+    response = requests.get(f'{URL}{MAP_SECTION}')
+
+    soup = BeautifulSoup(response.text, 'lxml')
+
+    scripts = soup.findAll('script')
+
+    for index, script in enumerate(scripts):
+
+        script_content = script.string
+
+        if script_content is not None and "var pickpoints =" in script_content:
+
+            match = re.search(r"var pickpoints = \[(.+)\]", str(script_content))
+
+            data = json.loads(match.group(0).split('=')[1])
+            return data
+
+def update_location (feature_list):
+    for feature in feature_list:
+        
+        modified_feature = {
+            'id': feature['id'],
+            'lat': feature['coordinates'][0],
+            'lng': feature['coordinates'][1],
+            'isPost': feature['isWb'], 
+            'isWb': feature['isWb'],
+            "isExternalPostamat": feature['isExternalPostamat'],
+            "workTime": feature['workTime'],
+        }
+
+        yield modified_feature
+
+
+def extract_points (URL):
+    response = requests.get(f'{URL}{MAP_SECTION}')
+    soup = BeautifulSoup(response.text, 'lxml')
+
+    scripts = soup.findAll('script')
+    
+    for index, script in enumerate(scripts): 
+        script_content = script.string
+        
+        if script_content is not None and "var pickpoints =" in script_content:
+            match = re.search(r"var pickpoints = \[(.+)\]", str(script_content))
+            data = json.loads(match.group(0).split('=')[1])
+            updated_location_data = update_location(data)
+
+            return updated_location_data
+
+def parse_detailed_info_response (feature_list):
+    for feature_id in feature_list:
+        
+        feature = {}
+
+        try:
+            feature = {
+                "id": int(feature_id),
+                "address": feature_list[feature_id]['address'],
+                "wayInfo": feature_list[feature_id]['wayInfo'],
+            }
+        except:
+            feature = {
+                "id": int(feature_id),
+                "address": feature_list[feature_id]['address'],
+                "wayInfo": None,
+            }
+
+        yield feature
+
+def extract_detailed_info (URL, df_points):
+
+    url = f'{URL}{EXTRACT_URL}'
+
+    headers = {
+        'Content-Type': "application/json; charset=UTF-8",
+        'x-requested-with': 'XMLHttpRequest',
+    }
+
+    payload = json.dumps(list(df_points['id']))
+
+    response = requests.post(url, headers=headers, data=payload).json()
+
+    df_detailed_info = pd.DataFrame(parse_detailed_info_response(response['value']))
+
+    df_merged = df_points.merge(df_detailed_info.set_index('id'), on='id')
+
+    return df_merged
+
+def to_geojson(data_frame):
+    features = []
+
+    for index, row in data_frame.iterrows(): 
+        
+        feature = {
+            "type": "Feature",
+            "properties": {
+                'isPost': row['isPost'],
+                'isWb': row['isWb'],
+                'isExternalPostamat': row['isExternalPostamat'],
+                'workTime': row['workTime'],
+                'address': row['address'],
+                'wayInfo': row['wayInfo']
+            },
+            "geometry": {
+                "type": "Point",
+                "coordinates": [row['lng'], row['lat']]
+            }
+        }
+
+        features.append(feature)
+    
+    featureCollection = {
+       "type": "FeatureCollection",
+        "features": features
+    }
+
+    return featureCollection
+
+def main (city):
+    
+    if city in CITIES:
+        url = CITIES[city]
+
+        df_points = pd.DataFrame( extract_points(url) ) 
+        df_detailed_info = extract_detailed_info (url, df_points)
+        
+        geojson = to_geojson(df_detailed_info)
+
+        # return geojson
+        print(geojson)
+    else:
+        return False
+
+if __name__ == '__main__':
+    main('am')
